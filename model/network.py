@@ -9,36 +9,7 @@ def conv1_1(in_planes,out_planes,stride=1):
     return nn.Conv2d(in_planes,out_planes,kernel_size=1,stride=stride,padding=0,bias = False)
 
 
-class GAM_Attention(nn.Module):
-    def __init__(self, in_channels, out_channels, rate=4):
-        super(GAM_Attention, self).__init__()
 
-        self.channel_attention = nn.Sequential(
-            nn.Linear(in_channels, int(in_channels / rate)),
-            nn.ReLU(inplace=False),
-            nn.Linear(int(in_channels / rate), in_channels)
-        )
-
-        self.spatial_attention = nn.Sequential(
-            nn.Conv2d(in_channels, int(in_channels / rate), kernel_size=7, padding=3),
-            nn.BatchNorm2d(int(in_channels / rate),affine=True),
-            nn.ReLU(inplace=False),
-            nn.Conv2d(int(in_channels / rate), out_channels, kernel_size=7, padding=3),
-            nn.BatchNorm2d(out_channels,affine=True)
-        )
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        x_permute = x.permute(0, 2, 3, 1).contiguous().view(b, -1, c)
-        x_att_permute = self.channel_attention(x_permute).view(b, h, w, c)
-        x_channel_att = x_att_permute.permute(0, 3, 1, 2).contiguous() 
-
-        x = x * x_channel_att
-
-        x_spatial_att = self.spatial_attention(x).sigmoid()
-        out = x * x_spatial_att
-
-        return out
 class ResBlock(nn.Module):
     def __init__(self,in_planes,out_planes,stride=1):
         super(ResBlock,self).__init__()
@@ -72,31 +43,57 @@ class BasicBlock(nn.Module):
         #
         #self.bn2=nn.BatchNorm2d(out_planes)
 
-        self.gam = GAM_Attention(out_planes,out_planes)
         
-
+        self.atrous_block1 = conv3_3(out_planes,out_planes) 
+        self.abn1 = nn.BatchNorm2d(out_planes,affine=True)
+        self.atrous_block1_conv = conv1_1(out_planes,out_planes)
+        self.atrous_block1_bn2 = nn.BatchNorm2d(out_planes,affine=True)
+        
         self.atrous_block3 = nn.Conv2d(out_planes, out_planes, 3, 1, padding=3, dilation=3)
         self.abn3 = nn.BatchNorm2d(out_planes,affine=True)
-       
+        self.spatial_attention = nn.Sequential(
+            nn.Conv2d(out_planes, int(out_planes / 4), kernel_size=7, padding=3),
+            nn.BatchNorm2d(int(out_planes / 4),affine=True),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(int(out_planes / 4), out_planes, kernel_size=7, padding=3),
+            nn.BatchNorm2d(out_planes,affine=True)
+        )
+        self.atrous_block3_conv = conv1_1(out_planes,out_planes)
+        self.atrous_block3_bn2 = nn.BatchNorm2d(out_planes,affine=True)
+        
 
         self.atrous_block6 = nn.Conv2d(out_planes, out_planes, 3, 1, padding=6, dilation=6)
         self.abn6 = nn.BatchNorm2d(out_planes,affine=True)
-        
-        self.conv2 = conv3_3(out_planes,out_planes)
-        self.final_bn = nn.BatchNorm2d(out_planes,affine=True)
+        self.channel_attention = nn.Sequential(
+            nn.Linear(out_planes, int(out_planes / 4)),
+            nn.ReLU(inplace=False),
+            nn.Linear(int(out_planes / 4), out_planes)
+        )
+        self.atrous_block6_conv = conv1_1(out_planes,out_planes)
+        self.atrous_block6_bn2 = nn.BatchNorm2d(out_planes,affine=True)
         
 
     def forward(self, x):
         out = self.bn1(F.relu(self.conv1(x)))
         #out = self.bn2(self.conv2(out))
 
-        out1 = self.gam(out)
+        out1 = self.abn1(F.relu(self.atrous_block1(out)))
         out2 = self.abn3(F.relu(self.atrous_block3(out)))
         out3 = self.abn6(F.relu(self.atrous_block6(out)))
-
-        Out = out1+out2+out3
-
-        Out = self.final_bn(F.relu(self.conv2(Out)))
+        
+        out2_spatial_att = self.spatial_attention(out2).sigmoid()
+        
+        b, c, h, w = x.shape
+        out3_permute = out3.permute(0, 2, 3, 1).contiguous().view(b, -1, c)
+        out3_att_permute = self.channel_attention(out3_permute).view(b, h, w, c)
+        out3_channel_att = out3_att_permute.permute(0, 3, 1, 2).contiguous() 
+        
+        out1_1_1 = self.atrous_block1_bn2(F.relu(self.atrous_block1_conv(out1)))
+        out1_1_3 = self.atrous_block3_bn2(F.relu(self.atrous_block3_conv(out2_spatial_att)))
+        out1_1_6 = self.atrous_block6_bn2(F.relu(self.atrous_block6_conv(out3_channel_att)))
+        
+        Out=out1_1_1*out1_1_3*out1_1_6+out
+        
         return Out
 
 class PatchEmbed(nn.Module):
